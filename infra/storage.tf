@@ -50,9 +50,17 @@ resource "azurerm_storage_queue" "events_poison" {
 
 # Audit log: who, what, when and the result, for every action the pipeline
 # takes. Table names allow letters and digits only.
-resource "azurerm_storage_table" "audit" {
-  name               = "jmlaudit"
-  storage_account_id = azurerm_storage_account.main.id
+#
+# Created through the Azure management API (azapi) rather than
+# azurerm_storage_table. That resource reads and writes the table's access
+# policies on every create and refresh, a call the Table service only accepts
+# with an account key, so it fails with a 403 on this account, where keys are
+# disabled. The management API has no such dependency.
+resource "azapi_resource" "audit_table" {
+  type      = "Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01"
+  name      = "jmlaudit"
+  parent_id = "${azurerm_storage_account.main.id}/tableServices/default"
+  body      = {}
 }
 
 # Data-plane access for the pipeline identity. With account keys disabled,
