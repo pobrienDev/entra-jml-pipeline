@@ -72,25 +72,44 @@ def find_account(client, employee_id):
     return matches[0] if matches else None
 
 
-class _WithClaimedUpns:
-    """The client as pick_upn sees it, plus the UPNs already handed out in
-    this run.
+class _AlreadyTheirs(Exception):
+    """A candidate UPN turned out to be this employee's own account."""
 
-    Two people in one file can want the same UPN (Jordan Lee and Jamie Lee).
-    The directory can't be relied on to show the first one as taken when the
-    second is checked: in a dry run it was never created, and after a real
-    create a new account can take a few seconds to become readable. So UPNs
-    picked earlier in the run are remembered here and count as taken.
+    def __init__(self, account):
+        super().__init__(account.get("userPrincipalName"))
+        self.account = account
+
+
+class _UpnCheck:
+    """The client as pick_upn sees it, with two things the directory alone
+    can't be trusted to tell it.
+
+    UPNs already handed out in this run. Two people in one file can want
+    the same UPN (Jordan Lee and Jamie Lee), and the first may not show as
+    taken when the second is checked: in a dry run it was never created,
+    and a new account can take a few seconds to become readable. So UPNs
+    picked earlier in the run count as taken.
+
+    Whether a taken UPN is this employee's own. Just after an account is
+    created, searching by employeeId can still come back empty while
+    reading the account by UPN already works. A retry in that window would
+    see its own account as "someone else has this UPN", move to the next
+    candidate and create a duplicate. So every taken UPN is checked for
+    this employee's ID, and a match ends the search: that is the account.
     """
 
-    def __init__(self, client, claimed):
+    def __init__(self, client, claimed, employee_id):
         self._client = client
         self._claimed = claimed
+        self._employee_id = employee_id
 
     def get_user(self, upn, select):
         if upn.lower() in self._claimed:
             return {"id": None, "displayName": "picked earlier in this run"}
-        return self._client.get_user(upn, select)
+        user = self._client.get_user(upn, f"{select},userPrincipalName,employeeId")
+        if user and user.get("employeeId") == self._employee_id:
+            raise _AlreadyTheirs(user)
+        return user
 
     def address_holder(self, local, domain):
         return self._client.address_holder(local, domain)
@@ -127,7 +146,7 @@ def onboard(client, employee, config, group_ids, dry_run=False, claimed_upns=Non
     of their groups they aren't in yet.
 
     claimed_upns is a set shared across one run: UPNs picked for earlier
-    employees, which this one must not be given (see _WithClaimedUpns).
+    employees, which this one must not be given (see _UpnCheck).
 
     Returns (user_id, actions). user_id is None only in a dry run for a
     person who has no account yet. A group step that fails is recorded and
@@ -136,6 +155,14 @@ def onboard(client, employee, config, group_ids, dry_run=False, claimed_upns=Non
     actions = []
     claimed_upns = claimed_upns if claimed_upns is not None else set()
     account = find_account(client, employee["employee_id"])
+    upn = None
+    if account is None:
+        try:
+            upn = pick_upn(
+                _UpnCheck(client, claimed_upns, employee["employee_id"]), employee, config,
+            )
+        except _AlreadyTheirs as found:
+            account = found.account
 
     if account:
         user_id = account["id"]
@@ -145,7 +172,6 @@ def onboard(client, employee, config, group_ids, dry_run=False, claimed_upns=Non
         ))
         current = {group["id"] for group in client.get_member_groups(user_id)}
     else:
-        upn = pick_upn(_WithClaimedUpns(client, claimed_upns), employee, config)
         claimed_upns.add(upn.lower())
         current = set()
         if dry_run:

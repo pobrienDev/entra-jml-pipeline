@@ -56,6 +56,17 @@ resource "azurerm_function_app_flex_consumption" "main" {
 
     # Tells the Azure SDK in the function code which identity to use.
     "AZURE_CLIENT_ID" = azurerm_user_assigned_identity.pipeline.client_id
+
+    # What the pipeline's own code reads. Names only, no credentials: it
+    # reaches all of these as the managed identity.
+    "JML_STORAGE_ACCOUNT" = azurerm_storage_account.main.name
+    "JML_FEED_CONTAINER"  = azurerm_storage_container.hr_feed.name
+    "JML_STATE_CONTAINER" = azurerm_storage_container.state.name
+    "JML_QUEUE_NAME"      = azurerm_storage_queue.events.name
+    # The domain new accounts get. Looked up from the tenant so it is never
+    # written down in this repo.
+    "JML_UPN_DOMAIN" = data.azuread_domains.default.domains[0].domain_name
+    "JML_DRY_RUN"    = tostring(var.dry_run)
   }
 
   # The app checks its storage on startup, so the identity's roles must exist
@@ -64,4 +75,9 @@ resource "azurerm_function_app_flex_consumption" "main" {
     azurerm_role_assignment.identity_storage,
     azurerm_role_assignment.identity_telemetry,
   ]
+}
+
+# The tenant's default domain.
+data "azuread_domains" "default" {
+  only_default = true
 }

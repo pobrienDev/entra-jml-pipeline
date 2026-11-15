@@ -6,6 +6,9 @@ locals {
   }
 }
 
+# Whoever is running Terraform.
+data "azurerm_client_config" "current" {}
+
 # Everything this project creates lives in this one resource group, so
 # `terraform destroy` (or deleting the group) removes all of it and nothing
 # belonging to the other projects in the tenant.

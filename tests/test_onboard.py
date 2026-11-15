@@ -260,6 +260,35 @@ def test_a_just_created_account_the_directory_cannot_see_yet_still_counts_as_tak
     assert "failed" not in results(actions)
 
 
+def test_a_retry_before_the_directory_can_find_the_new_account_by_employee_id_does_not_duplicate_it():
+    class SlowIndex(FakeDirectory):
+        """Searching by employeeId lags behind a create; reading the account
+        by UPN does not. A retry in that window must recognise its own
+        account rather than step to the next UPN and make a second one."""
+
+        def find_users_by_employee_id(self, employee_id, select):
+            return []
+
+    directory = SlowIndex()
+    ada = employee("E2", "Ada", "Byron")
+    onboard(directory, ada, CONFIG, GROUPS)
+    before = list(directory.writes)
+
+    _, actions = onboard(directory, ada, CONFIG, GROUPS)
+
+    assert directory.writes == before and len(directory.users) == 1
+    assert [(a["action"], a["result"]) for a in actions][0] == ("create_user", "skipped")
+
+
+def test_a_different_person_with_the_same_name_still_gets_the_next_upn():
+    directory = FakeDirectory()
+    onboard(directory, employee("E2", "Ada", "Byron"), CONFIG, GROUPS)
+
+    onboard(directory, employee("E9", "Ada", "Byron"), CONFIG, GROUPS)
+
+    assert sorted(u["userPrincipalName"] for u in directory.users.values()) == ["abyron@d.com", "adbyron@d.com"]
+
+
 # --- failures stay with the person they belong to ---------------------------------
 
 def test_a_refused_group_add_is_recorded_and_the_other_groups_still_happen():
