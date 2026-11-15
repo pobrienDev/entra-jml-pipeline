@@ -67,3 +67,20 @@ variable "feed_uploader_object_id" {
   type        = string
   default     = null
 }
+
+variable "max_leave_percent" {
+  description = "The mass-change brake. An HR export that would offboard more than this percentage of known employees is refused whole and raises an alert. Raise it deliberately for a real large departure, then put it back."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.max_leave_percent >= 1 && var.max_leave_percent <= 100
+    error_message = "max_leave_percent must be between 1 and 100."
+  }
+}
+
+variable "alert_email" {
+  description = "Address emailed when the pipeline needs attention. Set it in terraform.tfvars, never in a committed file. Null means the alert still fires and shows in the Azure portal, but nobody is emailed."
+  type        = string
+  default     = null
+}

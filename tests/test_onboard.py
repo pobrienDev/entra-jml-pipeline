@@ -29,18 +29,26 @@ class FakeDirectory:
       .users      object ID -> user dict
       .members    group ID -> set of user IDs
       .managers   user ID -> manager's user ID
+      .roles      user ID -> directory roles held
       .writes     every write, in order, as (operation, ...) tuples
       fail_group  a group ID whose membership adds are refused
+      fail_on     names of write operations that are refused
     """
 
-    def __init__(self, groups=GROUPS, fail_group=None):
+    def __init__(self, groups=GROUPS, fail_group=None, fail_on=()):
         self.groups = dict(groups)
         self.users = {}
         self.members = {group_id: set() for group_id in self.groups.values()}
         self.managers = {}
+        self.roles = {}
         self.writes = []
         self.payloads = []
         self.fail_group = fail_group
+        self.fail_on = set(fail_on)
+
+    def _refuse(self, operation):
+        if operation in self.fail_on:
+            raise GraphError(f"Graph API error (403) — refused: {operation}", status=403)
 
     # reads
     def get_user(self, upn, select):
@@ -59,7 +67,14 @@ class FakeDirectory:
         return [{"id": gid, "displayName": n} for n, gid in self.groups.items() if n == name]
 
     def get_member_groups(self, user_id):
-        return [{"id": gid} for gid, members in self.members.items() if user_id in members]
+        names = {gid: name for name, gid in self.groups.items()}
+        return [
+            {"id": gid, "displayName": names.get(gid, gid), "groupTypes": [], "mailEnabled": False}
+            for gid, members in self.members.items() if user_id in members
+        ]
+
+    def get_member_roles(self, user_id):
+        return list(self.roles.get(user_id, []))
 
     def get_manager(self, user_id):
         manager_id = self.managers.get(user_id)
@@ -81,8 +96,33 @@ class FakeDirectory:
         self.writes.append(("add_group_member", group_id, user_id))
 
     def set_manager(self, user_id, manager_id):
+        self._refuse("set_manager")
         self.managers[user_id] = manager_id
         self.writes.append(("set_manager", user_id, manager_id))
+
+    def remove_manager(self, user_id):
+        self._refuse("remove_manager")
+        self.managers.pop(user_id, None)
+        self.writes.append(("remove_manager", user_id))
+
+    def update_user(self, user_id, changes):
+        self._refuse("update_user")
+        self.users[user_id].update(changes)
+        self.writes.append(("update_user", user_id, tuple(sorted(changes))))
+
+    def revoke_sessions(self, user_id):
+        self._refuse("revoke_sessions")
+        self.writes.append(("revoke_sessions", user_id))
+
+    def remove_group_member(self, group_id, user_id):
+        self._refuse("remove_group_member")
+        self.members[group_id].discard(user_id)
+        self.writes.append(("remove_group_member", group_id, user_id))
+
+    def remove_licenses(self, user_id, sku_ids):
+        self._refuse("remove_licenses")
+        self.users[user_id]["assignedLicenses"] = []
+        self.writes.append(("remove_licenses", user_id, tuple(sku_ids)))
 
     # helpers for assertions
     def user(self, employee_id):

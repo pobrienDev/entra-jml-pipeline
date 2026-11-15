@@ -9,6 +9,8 @@ from collections import namedtuple
 
 from shared.diff import compute_changes
 from shared.hr_feed import parse_hr_export
+from shared.mover import move
+from shared.offboard import offboard
 from shared.onboard import FAILED, WOULD, assign_manager, find_account, onboard, record
 
 FeedPlan = namedtuple("FeedPlan", "events manager_events snapshot errors")
@@ -21,7 +23,29 @@ class EventFailed(Exception):
 
 
 class UnsupportedEvent(Exception):
-    """An event type the processor has no handler for yet."""
+    """An event type the processor has no handler for."""
+
+
+def brake_reason(plan, previous, max_leave_percent):
+    """Why this export must not be processed, or None if it may be.
+
+    The mass-change brake. A truncated or wrong file looks, to a diff,
+    exactly like most of the company resigning. So if one export would
+    offboard more than max_leave_percent of the people the pipeline knows,
+    nothing in it is processed and a person decides. One leaver is always
+    allowed, however small the company.
+    """
+    leavers = sum(1 for event in plan.events if event["type"] == "leave")
+    known = len(previous or {})
+    if not leavers or not known:
+        return None
+    allowed = max(1, known * max_leave_percent // 100)
+    if leavers <= allowed:
+        return None
+    return (
+        f"{leavers} of {known} people would be offboarded; the limit is "
+        f"{max_leave_percent}% ({allowed})"
+    )
 
 
 def plan_feed(text, config, previous):
@@ -59,8 +83,10 @@ def handle_event(client, event, config, group_ids, dry_run=False):
         _, actions = onboard(client, employee, config, group_ids, dry_run)
     elif kind == "manager":
         actions = _set_manager(client, employee, dry_run)
-    elif kind in ("move", "leave"):
-        raise UnsupportedEvent(f"{kind} events are not handled yet ({employee.get('employee_id')})")
+    elif kind == "move":
+        actions = move(client, employee, config, group_ids, dry_run)
+    elif kind == "leave":
+        actions = offboard(client, employee, config, group_ids, dry_run)
     else:
         raise UnsupportedEvent(f"unknown event type {kind!r}")
 

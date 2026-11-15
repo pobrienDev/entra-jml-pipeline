@@ -11,6 +11,10 @@ makes the queue retry the message (five attempts, 30 seconds apart, see
 host.json) and then move it to the poison queue, where it is visible and
 nothing is lost. Every step checks before it acts, so a retry repeats
 nothing.
+
+Two log lines exist to be alerted on (see infra/alerts.tf): one starting
+"poison:" when a message has failed its last attempt, and one starting
+"brake:" when an export is refused by the mass-change brake.
 """
 
 import json
@@ -21,12 +25,13 @@ from urllib.parse import unquote, urlparse
 
 import azure.functions as func
 
+from shared.audit import AuditLog
 from shared.auth import pipeline_credential
 from shared.config import build_config
-from shared.events import handle_event, plan_feed
+from shared.events import brake_reason, handle_event, plan_feed
 from shared.graph_api import GraphClient
 from shared.hr_feed import FeedError
-from shared.onboard import resolve_groups
+from shared.onboard import FAILED, resolve_groups
 from shared.storage import PipelineStorage
 
 app = func.FunctionApp()
@@ -35,6 +40,9 @@ app = func.FunctionApp()
 # to have been created by then.
 MANAGER_DELAY_SECONDS = int(os.environ.get("JML_MANAGER_DELAY_SECONDS", "90"))
 GROUP_CACHE_SECONDS = 600
+# Must match maxDequeueCount in host.json: the attempt after which the queue
+# gives up on a message and moves it to the poison queue.
+MAX_ATTEMPTS = 5
 
 _state = {}
 
@@ -59,6 +67,23 @@ def _storage():
             os.environ["JML_QUEUE_NAME"],
         )
     return _state["storage"]
+
+
+def _max_leave_percent():
+    return int(os.environ.get("JML_MAX_LEAVE_PERCENT", "10"))
+
+
+def _audit():
+    if "audit" not in _state:
+        _state["audit"] = AuditLog(
+            os.environ["JML_STORAGE_ACCOUNT"], pipeline_credential(), os.environ["JML_AUDIT_TABLE"],
+        )
+    return _state["audit"]
+
+
+def _feed_record(action, target, result, detail):
+    """An audit record about an export as a whole rather than one person."""
+    return {"employee_id": "-", "action": action, "target": target, "result": result, "detail": detail}
 
 
 def _graph():
@@ -111,10 +136,24 @@ def parser(event: func.EventGridEvent) -> None:
         # Not an HR export at all. Retrying can't fix the file, so report
         # it and stop; the snapshot is untouched.
         logging.error("parser: %s rejected: %s", blob_name, exc)
+        _audit().write([_feed_record("read_export", blob_name, FAILED, str(exc))], blob_name, "feed")
+        return
+
+    reason = brake_reason(plan, previous, _max_leave_percent())
+    if reason:
+        # Nothing is queued and the snapshot is left alone, so once the file
+        # is corrected (or the limit raised on purpose) it can simply be
+        # uploaded again.
+        logging.error("brake: %s not processed: %s", blob_name, reason)
+        _audit().write([_feed_record("mass_change_brake", blob_name, FAILED, reason)], blob_name, "feed")
         return
 
     for error in plan.errors:
         logging.warning("parser: %s rejected row: %s", blob_name, error)
+    _audit().write(
+        [_feed_record("reject_row", blob_name, FAILED, str(error)) for error in plan.errors],
+        blob_name, "feed",
+    )
     for item in plan.events:
         storage.send({**item, "source": blob_name})
     for item in plan.manager_events:
@@ -139,18 +178,29 @@ def processor(msg: func.QueueMessage) -> None:
     item = json.loads(msg.get_body().decode("utf-8"))
     employee_id = (item.get("employee") or {}).get("employee_id", "?")
     dry_run = _dry_run()
+    attempt = msg.dequeue_count or 1
+
+    def audit(actions):
+        for action in actions:
+            logging.info("audit %s", json.dumps(action, ensure_ascii=False))
+        _audit().write(actions, item.get("source", ""), item.get("type", ""), dry_run, attempt)
+
     try:
         actions = handle_event(_graph(), item, _config(), _group_ids(), dry_run)
     except Exception as exc:
-        for action in getattr(exc, "actions", []):
-            logging.info("audit %s", json.dumps(action, ensure_ascii=False))
+        audit(getattr(exc, "actions", []))   # what did happen before it failed
         logging.error(
-            "processor: %s %s failed on attempt %d: %s",
-            item.get("type"), employee_id, msg.dequeue_count, exc,
+            "processor: %s %s failed on attempt %d: %s", item.get("type"), employee_id, attempt, exc,
         )
+        if attempt >= MAX_ATTEMPTS:
+            logging.error(
+                "poison: %s %s moved to the poison queue after %d attempts: %s",
+                item.get("type"), employee_id, attempt, exc,
+            )
+            audit([{"employee_id": employee_id, "action": "poison_message",
+                    "target": item.get("type", "?"), "result": FAILED, "detail": str(exc)}])
         raise   # the queue retries, then moves the message to the poison queue
-    for action in actions:
-        logging.info("audit %s", json.dumps(action, ensure_ascii=False))
+    audit(actions)
     logging.info(
         "processor: %s %s done%s", item.get("type"), employee_id, " (dry run)" if dry_run else "",
     )

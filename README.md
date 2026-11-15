@@ -23,8 +23,8 @@ Work in progress, built in five stages.
 |---|---|---|
 | 1 | Foundation: infrastructure as code, managed identity, Graph permissions | done |
 | 2 | Bring over the Graph client and decision logic; joiner runs locally | done |
-| 3 | Parser and processor functions wired up in Azure | in review |
-| 4 | Mover, leaver, idempotency, audit log, safety brakes | not started |
+| 3 | Parser and processor functions wired up in Azure | done |
+| 4 | Mover, leaver, idempotency, audit log, safety brakes | in review |
 | 5 | CI/CD with OIDC, full documentation, demo | not started |
 
 ## How it works
@@ -43,12 +43,8 @@ HR CSV ──> Blob container ──(Event Grid)──> Parser function
    one message per change: join, move or leave.
 3. The processor handles each message by calling Microsoft Graph as a managed
    identity.
-4. Every action is logged. Messages that keep failing land in a poison queue.
-
-Joins run end to end today. Moves and leaves are detected and queued, but the
-processor refuses them until stage 4, so they wait in the poison queue rather
-than being dropped. The audit table and the poison-queue alert also arrive in
-stage 4.
+4. Every action is written to an audit table. Messages that keep failing land
+   in a poison queue, which raises an alert.
 
 ## What exists so far
 
@@ -60,6 +56,7 @@ stage 4.
 │   ├── function.tf              Flex Consumption plan and Function app
 │   ├── monitoring.tf            Log Analytics workspace, Application Insights
 │   ├── budget.tf                monthly cost alert
+│   ├── alerts.tf                alert when a message is poisoned or an export is refused
 │   ├── groups.tf                the Entra ID groups named in the department map
 │   ├── eventgrid.tf             delivers "CSV uploaded" events to the parser
 │   └── backend.tf               remote state (partial config, no names committed)
@@ -74,12 +71,16 @@ stage 4.
 │       ├── diff.py              compares an export with the last one: join, move, leave
 │       ├── events.py            export to events, and carrying out one event
 │       ├── onboard.py           the joiner: account, groups, manager
+│       ├── mover.py             the mover: attributes, group swap, manager
+│       ├── offboard.py          the leaver: lock out, clean up, stamp the date
+│       ├── audit.py             writes every action to the audit table
 │       ├── storage.py           the feed, the snapshot and the queue
 │       └── config.py            loads the department map
 ├── config/
 │   └── department_groups.json   which groups each department and title gets
 ├── sample-data/
-│   └── hr_export_day1.csv       20 made-up employees across 5 departments
+│   ├── hr_export_day1.csv       20 made-up employees across 5 departments
+│   └── hr_export_day2.csv       the next day: 2 joiners, 4 movers, 2 leavers
 ├── scripts/
 │   ├── grant-graph-perms.sh     grants the managed identity its Graph permissions
 │   ├── build_package.sh         builds the Function app zip
@@ -110,6 +111,7 @@ Application permissions, granted to the managed identity by
 | `User.ReadWrite.All` | Create and update users, set manager, disable sign-in |
 | `GroupMember.ReadWrite.All` | Add and remove group members. Narrower than `Group.ReadWrite.All`: the pipeline never creates or reconfigures a group |
 | `User.RevokeSessions.All` | Revoke sign-in sessions when offboarding |
+| `User-LifeCycleInfo.ReadWrite.All` | Stamp the leave date on an offboarded account. It covers that one attribute, which `User.ReadWrite.All` cannot write |
 
 The Azure portal can't grant Graph permissions to a managed identity, so the
 script assigns them through the Graph API. It checks before it grants, so
@@ -164,15 +166,61 @@ account, are in their groups and report to their manager:
   opens nothing but CSVs in the configured container of its own storage
   account.
 
+### The mover
+
+When someone's department, title or manager changes:
+
+- **Attributes follow the HR record.** The account is compared with the
+  record itself, not with what the event says changed, so a half-applied
+  move is finished by running it again.
+- **Groups are swapped, new before old.** The groups the new role needs are
+  added before the ones it doesn't are removed, so nobody is left without
+  access in between.
+- **Only managed groups are ever removed.** A membership in a group the
+  department map doesn't name was granted by someone else, and stays.
+- **The manager follows too**, including being cleared when HR lists none.
+
+### The leaver
+
+When someone leaves the feed or is marked terminated:
+
+1. **Lock out first.** The account is disabled and its sessions revoked
+   before any clean-up, so a failure later can't leave someone signed in.
+2. **Leave the managed groups.** Other memberships and any directory roles
+   are not touched; they are recorded as follow-ups for a person.
+3. **Free directly assigned licenses.**
+4. **Stamp the leave date** on the account, last, and only if everything
+   before it worked. That stamp is what a later clean-up job would read, and
+   what tells a repeat run the account is already finished.
+
+The account is disabled, never deleted.
+
+### Guardrails
+
+- **The mass-change brake.** A truncated file looks, to a diff, exactly like
+  most of the company resigning. If one export would offboard more than 10%
+  of the people the pipeline knows, nothing in it is processed, the snapshot
+  is left alone and an alert fires. Fix the file and upload it again, or
+  raise `max_leave_percent` on purpose.
+- **Dry run.** With `dry_run = true` the processor reads the directory,
+  works out every step and records it in the audit table as "would", and
+  changes nothing.
+- **The audit table.** One row per action: who it was about, what was done,
+  to what, the result, the export that caused it and which attempt it was.
+  Partitioned by date.
+- **An alert a person will see.** Fires when a message has failed its fifth
+  and last attempt, or when the brake refuses an export.
+
 ### What came from employee-provisioning-tool
 
 | | What | Notes |
 |---|---|---|
 | Copied unchanged | Request handling, retries, paging and error handling; user, group and license calls; UPN generation and its transliteration table; their tests | Taken line for line from the original |
 | Copied, then changed | Authentication | A client secret from `.env` became a credential object: the managed identity in Azure, the Azure CLI sign-in locally |
+| Copied, then changed | Offboarding | The CLI's `terminate` command, without its prompts and printing, as a function a queue can call. Same order: lock out, then clean up. It removes only managed groups, where the CLI removes all it can |
 | Rewritten | Group selection and display names | The CLI's rules follow that tool's own business model. Here they follow a department map |
 | Left behind | Mailbox features, the delegated sign-in, MFA reset, licensing, the command-line interface | They need a signed-in person, or the lab tenant has nothing for them to act on |
-| New | `employeeId` matching, manager assignment, HR feed parsing, the idempotent joiner, the dry run | |
+| New | `employeeId` matching, manager assignment, HR feed parsing, the idempotent joiner, the mover, snapshot diffing, the audit table, the mass-change brake, the dry run | |
 
 ## Running the joiner locally
 
