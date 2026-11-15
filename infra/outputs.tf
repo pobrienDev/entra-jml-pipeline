@@ -5,7 +5,7 @@ output "resource_group_name" {
 
 output "function_app_name" {
   description = "Function app that hosts the parser and processor."
-  value       = azurerm_function_app_flex_consumption.main.name
+  value       = azapi_resource.function_app.name
 }
 
 output "storage_account_name" {

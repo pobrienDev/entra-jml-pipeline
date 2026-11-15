@@ -14,8 +14,9 @@ provider "azurerm" {
   storage_use_azuread = true
 }
 
-# Used for the one resource azurerm can't create on a storage account with
-# account keys disabled: the audit table. See storage.tf.
+# Used for the two resources azurerm can't manage correctly when the storage
+# account has account keys disabled: the audit table (storage.tf) and the
+# Function app (function.tf).
 provider "azapi" {
   tenant_id       = var.tenant_id
   subscription_id = var.subscription_id

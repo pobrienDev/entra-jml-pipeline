@@ -33,8 +33,10 @@ resource "azurerm_eventgrid_system_topic_event_subscription" "hr_feed" {
   }
 
   azure_function_endpoint {
-    function_id          = "${azurerm_function_app_flex_consumption.main.id}/functions/parser"
+    function_id          = "${azapi_resource.function_app.id}/functions/parser"
     max_events_per_batch = 1
+    # Azure's default, stated so the plan doesn't report it as a change.
+    preferred_batch_size_in_kilobytes = 64
   }
 
   # If the parser is down or failing, keep trying for an hour, then give up.
