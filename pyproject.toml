@@ -1,0 +1,7 @@
+# Test configuration only. The code runs as an Azure Function app, not as an
+# installed package.
+[tool.pytest.ini_options]
+# The Function app's root is src/, so imports read `from shared import ...`
+# in tests exactly as they do in Azure.
+pythonpath = ["src"]
+testpaths = ["tests"]

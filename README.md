@@ -21,8 +21,8 @@ Work in progress, built in five stages.
 
 | Stage | Focus | State |
 |---|---|---|
-| 1 | Foundation: infrastructure as code, managed identity, Graph permissions | in review |
-| 2 | Bring over the Graph client and decision logic; joiner runs locally | not started |
+| 1 | Foundation: infrastructure as code, managed identity, Graph permissions | done |
+| 2 | Bring over the Graph client and decision logic; joiner runs locally | in review |
 | 3 | Parser and processor functions wired up in Azure | not started |
 | 4 | Mover, leaver, idempotency, audit log, safety brakes | not started |
 | 5 | CI/CD with OIDC, full documentation, demo | not started |
@@ -56,9 +56,23 @@ HR CSV ──> Blob container ──(Event Grid)──> Parser function
 │   ├── function.tf              Flex Consumption plan and Function app
 │   ├── monitoring.tf            Log Analytics workspace, Application Insights
 │   ├── budget.tf                monthly cost alert
+│   ├── groups.tf                the Entra ID groups named in the department map
 │   └── backend.tf               remote state (partial config, no names committed)
+├── src/shared/
+│   ├── graph_api.py             every Microsoft Graph call, with retries and paging
+│   ├── auth.py                  where the token comes from: managed identity or Azure CLI
+│   ├── rules.py                 UPN generation, groups from the department map
+│   ├── hr_feed.py               reads and validates the HR CSV, row by row
+│   ├── onboard.py               the joiner: account, groups, manager
+│   └── config.py                loads the department map
+├── config/
+│   └── department_groups.json   which groups each department and title gets
+├── sample-data/
+│   └── hr_export_day1.csv       20 made-up employees across 5 departments
 ├── scripts/
-│   └── grant-graph-perms.sh     grants the managed identity its Graph permissions
+│   ├── grant-graph-perms.sh     grants the managed identity its Graph permissions
+│   └── run_local.py             runs the joiner from a developer machine
+├── tests/                       Microsoft Graph faked throughout, no network
 └── .githooks/pre-commit         blocks IDs, secrets and state from being committed
 ```
 
@@ -88,6 +102,60 @@ The Azure portal can't grant Graph permissions to a managed identity, so the
 script assigns them through the Graph API. It checks before it grants, so
 running it twice changes nothing, and `--check` reports without changing
 anything.
+
+### The joiner
+
+For each active employee in the HR export, the joiner makes sure they have an
+account, are in their groups and report to their manager:
+
+- **People are matched on `employeeId`, never on name.** A name change in HR
+  doesn't create a second account, and two people with the same name don't
+  collide.
+- **Every step checks before it acts.** An account that exists isn't
+  recreated; a membership that exists isn't re-added; a manager that is
+  already set isn't set again. Running the same file twice changes nothing
+  the second time, and a run that died halfway is finished by running it
+  again.
+- **UPNs are collision-safe.** First initial plus surname, then more letters
+  of the first name, then numbers; accents are reduced (`Lefèvre` becomes
+  `lefevre`, `Strauß` becomes `strauss`); and an address already in use as
+  someone's mail alias counts as taken.
+- **It only touches groups named in the department map.** Any other
+  membership was granted by someone else and is left alone.
+- **One bad row doesn't stop the file.** A row that fails validation is
+  reported and skipped; a step that fails is recorded against that person
+  and the rest continue.
+- **Dry run by default.** The local runner reads the directory and reports
+  what it would do. Nothing changes without `--apply`.
+
+### What came from employee-provisioning-tool
+
+| | What | Notes |
+|---|---|---|
+| Copied unchanged | Request handling, retries, paging and error handling; user, group and license calls; UPN generation and its transliteration table; their tests | Taken line for line from the original |
+| Copied, then changed | Authentication | A client secret from `.env` became a credential object: the managed identity in Azure, the Azure CLI sign-in locally |
+| Rewritten | Group selection and display names | The CLI's rules follow that tool's own business model. Here they follow a department map |
+| Left behind | Mailbox features, the delegated sign-in, MFA reset, licensing, the command-line interface | They need a signed-in person, or the lab tenant has nothing for them to act on |
+| New | `employeeId` matching, manager assignment, HR feed parsing, the idempotent joiner, the dry run | |
+
+## Running the joiner locally
+
+Requires Python 3.10 or later and an Azure CLI session in the lab tenant.
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+
+# Dry run: reads the directory, changes nothing
+.venv/bin/python scripts/run_local.py sample-data/hr_export_day1.csv --domain <your-lab-domain>
+
+# For real
+.venv/bin/python scripts/run_local.py sample-data/hr_export_day1.csv --domain <your-lab-domain> --apply
+```
+
+`--domain` is the UPN domain new accounts get. The run stops unless it is a
+verified domain of the tenant the Azure CLI is signed in to, so a session
+left signed in to a different tenant can't be changed by accident.
 
 ## Deploying to your own lab tenant
 

@@ -20,3 +20,8 @@ provider "azapi" {
   tenant_id       = var.tenant_id
   subscription_id = var.subscription_id
 }
+
+# Entra ID objects: the groups the pipeline manages membership of.
+provider "azuread" {
+  tenant_id = var.tenant_id
+}
