@@ -84,3 +84,15 @@ variable "alert_email" {
   type        = string
   default     = null
 }
+
+variable "github_subject_prefix" {
+  description = "The start of the OIDC subject GitHub issues for this repository, in its immutable form with numeric owner and repository IDs. From: gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix"
+  type        = string
+  default     = "repo:pobrienDev@24906399/entra-jml-pipeline@1459014369"
+}
+
+variable "github_environment" {
+  description = "The GitHub deployment environment whose jobs may deploy. Protect it with a required reviewer."
+  type        = string
+  default     = "lab"
+}

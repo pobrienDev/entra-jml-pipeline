@@ -32,3 +32,8 @@ output "managed_identity_client_id" {
   description = "Client ID of the pipeline identity."
   value       = azurerm_user_assigned_identity.pipeline.client_id
 }
+
+output "deploy_identity_client_id" {
+  description = "Client ID of the identity GitHub Actions deploys as. Goes in the lab environment's AZURE_CLIENT_ID secret."
+  value       = azurerm_user_assigned_identity.deploy.client_id
+}

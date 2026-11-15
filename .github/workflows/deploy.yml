@@ -1,0 +1,70 @@
+name: deploy
+
+# Deploys the Function app's code to the lab. Infrastructure is not touched:
+# Terraform is applied by a person, not by this workflow.
+#
+# There is no Azure secret in this repository. GitHub mints a short-lived
+# OIDC token for the run, and Azure exchanges it for an access token through
+# the federated credential in infra/github.tf. That credential trusts one
+# thing only: a job in this repository's `lab` environment. A job that
+# doesn't declare the environment gets a different token subject and is
+# refused, so the environment's protection rules (a required reviewer, main
+# only) gate every deployment.
+#
+# The identity it signs in as can deploy code to the one Function app. It
+# cannot change infrastructure, read storage, or call Microsoft Graph.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "config/**"
+      - "requirements.txt"
+      - "scripts/build_package.sh"
+      - "scripts/deploy.sh"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write # lets the job request the OIDC token
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  # What gets deployed is what was just tested, on the Python the app runs.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: lab
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # IDs and names are stored as environment secrets so GitHub masks them
+      # in this public repository's logs. None of them is a credential.
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy
+        env:
+          FUNCTION_APP_NAME: ${{ secrets.FUNCTION_APP_NAME }}
+          RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+        run: scripts/deploy.sh
