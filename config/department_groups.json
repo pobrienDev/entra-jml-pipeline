@@ -1,0 +1,17 @@
+{
+  "all_employees": ["jml-all-staff"],
+  "departments": {
+    "Engineering": ["jml-dept-engineering"],
+    "Sales": ["jml-dept-sales"],
+    "Finance": ["jml-dept-finance"],
+    "People": ["jml-dept-people"],
+    "IT": ["jml-dept-it"]
+  },
+  "titles": {
+    "Engineering Manager": ["jml-people-managers"],
+    "Sales Manager": ["jml-people-managers"],
+    "Finance Manager": ["jml-people-managers"],
+    "People Manager": ["jml-people-managers"],
+    "IT Manager": ["jml-people-managers"]
+  }
+}

@@ -1,0 +1,21 @@
+employee_id,first_name,last_name,department,title,manager_id,start_date,status
+E1001,Amara,Okafor,Finance,Chief Operating Officer,,2026-11-02,active
+E1002,Daniel,Reyes,Engineering,Engineering Manager,E1001,2026-11-02,active
+E1003,Priya,Raman,Engineering,Software Engineer,E1002,2026-11-02,active
+E1004,Tomás,Núñez,Engineering,Software Engineer,E1002,2026-11-02,active
+E1005,Søren,Østergaard,Engineering,Site Reliability Engineer,E1002,2026-11-09,active
+E1006,Jordan,Lee,Engineering,Software Engineer,E1002,2026-11-09,active
+E1007,Jamie,Lee,Engineering,QA Engineer,E1002,2026-11-09,active
+E1008,Chloé,Lefèvre,Sales,Sales Manager,E1001,2026-11-02,active
+E1009,Marcus,Bell,Sales,Account Executive,E1008,2026-11-02,active
+E1010,Hannah,O'Neill,Sales,Account Executive,E1008,2026-11-09,active
+E1011,Wei,Zhang,Sales,Sales Development Representative,E1008,2026-11-16,active
+E1012,Fatima,Haddad,Finance,Finance Manager,E1001,2026-11-02,active
+E1013,Lukas,Strauß,Finance,Accountant,E1012,2026-11-09,active
+E1014,Grace,Mbeki,Finance,Payroll Specialist,E1012,2026-11-16,active
+E1015,Elena,Petrova,People,People Manager,E1001,2026-11-02,active
+E1016,Samuel,Adeyemi,People,Recruiter,E1015,2026-11-09,active
+E1017,Mei,Tanaka,People,HR Generalist,E1015,2026-11-16,active
+E1018,Victor,Almeida,IT,IT Manager,E1001,2026-11-02,active
+E1019,Nadia,Rahman,IT,Systems Administrator,E1018,2026-11-09,active
+E1020,Owen,Gallagher,IT,Help Desk Technician,E1018,2026-11-16,active
