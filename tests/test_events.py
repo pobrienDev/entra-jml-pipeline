@@ -9,8 +9,13 @@ Run from the repo root:  python -m pytest -q
 import pytest
 from test_onboard import CONFIG, GROUPS, FakeDirectory, employee
 
-from shared.events import EventFailed, UnsupportedEvent, handle_event, plan_feed
+from pathlib import Path
+
+from shared.config import build_config
+from shared.events import EventFailed, UnsupportedEvent, brake_reason, handle_event, plan_feed
 from shared.hr_feed import FeedError
+
+SAMPLES = Path(__file__).resolve().parents[1] / "sample-data"
 
 HEADER = "employee_id,first_name,last_name,department,title,manager_id,start_date,status\n"
 DAY_ONE = HEADER + (
@@ -155,14 +160,36 @@ def test_a_group_that_does_not_exist_fails_the_event():
         handle_event(FakeDirectory(), join("E2", "Ada", "Byron"), CONFIG, without_eng)
 
 
-@pytest.mark.parametrize("kind", ["move", "leave"])
-def test_moves_and_leaves_are_refused_until_they_are_built(kind):
+def test_a_move_event_reaches_the_mover():
     directory = FakeDirectory()
+    handle_event(directory, join("E2", "Ada", "Byron"), CONFIG, GROUPS)
 
-    with pytest.raises(UnsupportedEvent, match="not handled yet"):
-        handle_event(directory, {"type": kind, "employee": employee("E2", "Ada", "Byron")}, CONFIG, GROUPS)
+    actions = handle_event(
+        directory,
+        {"type": "move", "employee": employee("E2", "Ada", "Byron", department="Sales", title="Account Executive")},
+        CONFIG, GROUPS,
+    )
 
-    assert directory.writes == []
+    assert directory.groups_of("E2") == ["all-staff", "dept-sales"]
+    assert directory.user("E2")["department"] == "Sales"
+    assert "failed" not in {a["result"] for a in actions}
+
+
+def test_a_leave_event_reaches_the_leaver():
+    directory = FakeDirectory()
+    handle_event(directory, join("E2", "Ada", "Byron"), CONFIG, GROUPS)
+
+    handle_event(directory, {"type": "leave", "employee": employee("E2", "Ada", "Byron"), "reason": "x"},
+                 CONFIG, GROUPS)
+
+    assert directory.user("E2")["accountEnabled"] is False
+    assert directory.groups_of("E2") == []
+
+
+def test_a_move_for_someone_with_no_account_fails_so_it_is_retried():
+    with pytest.raises(EventFailed, match="no account carries this employeeId"):
+        handle_event(FakeDirectory(), {"type": "move", "employee": employee("E2", "Ada", "Byron")},
+                     CONFIG, GROUPS)
 
 
 def test_an_unknown_event_type_is_refused():
@@ -178,3 +205,130 @@ def test_a_dry_run_carries_out_nothing():
 
     assert directory.writes == []
     assert {a["result"] for a in joined + managed} == {"would"}
+
+
+# --- the mass-change brake --------------------------------------------------------
+
+def roster(count):
+    return HEADER + "".join(f"E{n},Ada,Byron,Engineering,Engineer,,,\n" for n in range(1, count + 1))
+
+
+def test_an_export_that_would_offboard_too_many_people_is_refused():
+    known = plan_feed(roster(20), CONFIG, None).snapshot
+
+    plan = plan_feed(roster(10), CONFIG, known)        # half the company gone
+
+    assert brake_reason(plan, known, 10) == "10 of 20 people would be offboarded; the limit is 10% (2)"
+
+
+def test_leavers_within_the_limit_pass():
+    known = plan_feed(roster(20), CONFIG, None).snapshot
+
+    assert brake_reason(plan_feed(roster(18), CONFIG, known), known, 10) is None   # 2 of 20
+    assert brake_reason(plan_feed(roster(17), CONFIG, known), known, 10) is not None  # 3 of 20
+
+
+def test_one_leaver_is_always_allowed_however_small_the_company():
+    known = plan_feed(roster(3), CONFIG, None).snapshot
+
+    assert brake_reason(plan_feed(roster(2), CONFIG, known), known, 10) is None
+    assert brake_reason(plan_feed(roster(1), CONFIG, known), known, 10) is not None
+
+
+def test_the_limit_is_configurable():
+    known = plan_feed(roster(20), CONFIG, None).snapshot
+    plan = plan_feed(roster(10), CONFIG, known)
+
+    assert brake_reason(plan, known, 50) is None
+
+
+def test_joins_and_moves_never_trip_the_brake():
+    known = plan_feed(roster(2), CONFIG, None).snapshot
+
+    assert brake_reason(plan_feed(roster(40), CONFIG, known), known, 10) is None
+    assert brake_reason(plan_feed(roster(40), CONFIG, None), None, 10) is None       # first export
+
+
+def test_an_empty_file_trips_the_brake_instead_of_offboarding_everyone():
+    known = plan_feed(roster(20), CONFIG, None).snapshot
+
+    plan = plan_feed(HEADER, CONFIG, known)
+
+    assert len([e for e in plan.events if e["type"] == "leave"]) == 20
+    assert brake_reason(plan, known, 10) is not None
+
+
+# --- the sample files shipped in the repo --------------------------------------------
+
+def sample(name):
+    return (SAMPLES / name).read_text(encoding="utf-8")
+
+
+def test_day_two_after_day_one_is_two_joins_four_moves_and_two_leaves():
+    config = build_config("d.com")
+    day1 = plan_feed(sample("hr_export_day1.csv"), config, None)
+
+    day2 = plan_feed(sample("hr_export_day2.csv"), config, day1.snapshot)
+
+    assert day2.errors == []
+    assert sorted((e["type"], e["employee"]["employee_id"]) for e in day2.events) == [
+        ("join", "E1021"), ("join", "E1022"),
+        ("leave", "E1012"), ("leave", "E1020"),
+        ("move", "E1003"), ("move", "E1006"), ("move", "E1013"), ("move", "E1014"),
+    ]
+    changed = {e["employee"]["employee_id"]: e["changed"] for e in day2.events if e["type"] == "move"}
+    assert changed == {
+        "E1003": ["title"],
+        "E1006": ["department", "title", "manager_id"],
+        "E1013": ["title", "manager_id"],
+        "E1014": ["manager_id"],
+    }
+    reasons = {e["employee"]["employee_id"]: e["reason"] for e in day2.events if e["type"] == "leave"}
+    assert reasons == {"E1012": "status is terminated", "E1020": "no longer in the feed"}
+    assert brake_reason(day2, day1.snapshot, 10) is None
+
+
+def test_each_sample_file_processed_twice_plans_nothing_the_second_time():
+    config = build_config("d.com")
+    day1 = plan_feed(sample("hr_export_day1.csv"), config, None)
+    assert plan_feed(sample("hr_export_day1.csv"), config, day1.snapshot).events == []
+
+    day2 = plan_feed(sample("hr_export_day2.csv"), config, day1.snapshot)
+    assert plan_feed(sample("hr_export_day2.csv"), config, day2.snapshot).events == []
+
+
+def test_both_sample_days_run_end_to_end_and_a_rerun_changes_nothing():
+    """The plan's idempotency test, against the in-memory directory: process
+    day one, then day two, then day two again."""
+    config = build_config("d.com")
+    names = ["jml-all-staff", "jml-dept-engineering", "jml-dept-sales", "jml-dept-finance",
+             "jml-dept-people", "jml-dept-it", "jml-people-managers"]
+    groups = {name: f"g-{i}" for i, name in enumerate(names)}
+    directory = FakeDirectory(groups=groups)
+
+    def run(plan):
+        results = []
+        for event in plan.events + plan.manager_events:
+            results += handle_event(directory, event, config, groups)
+        return results
+
+    day1 = plan_feed(sample("hr_export_day1.csv"), config, None)
+    run(day1)
+    day2 = plan_feed(sample("hr_export_day2.csv"), config, day1.snapshot)
+    run(day2)
+    writes = list(directory.writes)
+
+    # Deliver every day-two message a second time, as a queue may.
+    again = run(day2)
+
+    assert directory.writes == writes
+    assert {a["result"] for a in again} == {"skipped"}
+    # And the directory is where day two says it should be.
+    assert directory.user("E1012")["accountEnabled"] is False
+    assert directory.user("E1020")["accountEnabled"] is False
+    assert directory.groups_of("E1012") == [] and directory.groups_of("E1020") == []
+    assert directory.groups_of("E1006") == ["jml-all-staff", "jml-dept-it"]
+    assert directory.groups_of("E1013") == ["jml-all-staff", "jml-dept-finance", "jml-people-managers"]
+    assert directory.user("E1003")["jobTitle"] == "Senior Software Engineer"
+    assert directory.managers[directory.user("E1014")["id"]] == directory.user("E1013")["id"]
+    assert len(directory.users) == 22

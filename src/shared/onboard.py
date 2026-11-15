@@ -60,9 +60,9 @@ def resolve_groups(client, config):
     return ids, missing
 
 
-def find_account(client, employee_id):
+def find_account(client, employee_id, select=USER_FIELDS):
     """The account carrying this employeeId, or None."""
-    matches = client.find_users_by_employee_id(employee_id, USER_FIELDS)
+    matches = client.find_users_by_employee_id(employee_id, select)
     if len(matches) > 1:
         upns = ", ".join(sorted(m.get("userPrincipalName", "?") for m in matches))
         raise ProvisionError(

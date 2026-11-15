@@ -358,6 +358,14 @@ class GraphClient:
                 return None
             raise
 
+    def remove_manager(self, user_id):
+        """Clear the user's manager. Having none already is not an error."""
+        try:
+            self._request("DELETE", f"/users/{user_id}/manager/$ref")
+        except GraphError as exc:
+            if exc.status != 404:
+                raise
+
     def set_manager(self, user_id, manager_id):
         """Set the user's manager. A PUT, so repeating it is harmless."""
         payload = {"@odata.id": f"{GRAPH_BASE}/users/{manager_id}"}

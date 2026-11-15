@@ -106,3 +106,11 @@ resource "azurerm_role_assignment" "feed_uploader" {
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = coalesce(var.feed_uploader_object_id, data.azurerm_client_config.current.object_id)
 }
+
+# Lets the same person read the audit log. Read-only, and scoped to the one
+# table: the audit trail should be something its reader can't edit.
+resource "azurerm_role_assignment" "audit_reader" {
+  scope                = azapi_resource.audit_table.id
+  role_definition_name = "Storage Table Data Reader"
+  principal_id         = coalesce(var.feed_uploader_object_id, data.azurerm_client_config.current.object_id)
+}

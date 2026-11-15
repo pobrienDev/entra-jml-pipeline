@@ -41,8 +41,12 @@ locals {
     "JML_QUEUE_NAME"      = azurerm_storage_queue.events.name
     # The domain new accounts get. Looked up from the tenant so it is never
     # written down in this repo.
-    "JML_UPN_DOMAIN" = data.azuread_domains.default.domains[0].domain_name
-    "JML_DRY_RUN"    = tostring(var.dry_run)
+    "JML_UPN_DOMAIN"  = data.azuread_domains.default.domains[0].domain_name
+    "JML_DRY_RUN"     = tostring(var.dry_run)
+    "JML_AUDIT_TABLE" = azapi_resource.audit_table.name
+    # The mass-change brake: refuse an export that would offboard more than
+    # this share of the people the pipeline knows.
+    "JML_MAX_LEAVE_PERCENT" = tostring(var.max_leave_percent)
   }
 }
 

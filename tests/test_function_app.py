@@ -54,16 +54,33 @@ class FakeStorage:
         self.sent.append((event, delay_seconds))
 
 
+class FakeAudit:
+    """In-memory stand-in for shared.audit.AuditLog."""
+
+    def __init__(self):
+        self.rows = []
+
+    def write(self, actions, source="", event_type="", dry_run=False, attempt=1):
+        for action in actions:
+            self.rows.append({**action, "source": source, "event_type": event_type,
+                              "dry_run": dry_run, "attempt": attempt})
+
+
 @pytest.fixture
 def wired(monkeypatch):
     """The Function app with fakes in place of storage, Graph and settings."""
     storage, directory = FakeStorage({"day1.csv": DAY_ONE}), FakeDirectory()
     monkeypatch.setattr(function_app, "_state", {
         "storage": storage, "graph": directory, "config": CONFIG,
-        "groups": (float("inf"), GROUPS),
+        "groups": (float("inf"), GROUPS), "audit": FakeAudit(),
     })
     monkeypatch.delenv("JML_DRY_RUN", raising=False)
+    monkeypatch.delenv("JML_MAX_LEAVE_PERCENT", raising=False)
     return storage, directory
+
+
+def audit_rows():
+    return function_app._state["audit"].rows
 
 
 parser = function_app.parser.build().get_user_function()
@@ -198,9 +215,154 @@ def test_a_failed_event_raises_so_the_queue_retries_and_then_poisons_it(wired):
         processor(message(join, dequeue_count=3))
 
 
-def test_a_move_message_is_refused_rather_than_silently_dropped(wired):
+def test_a_message_of_an_unknown_type_is_refused_rather_than_silently_dropped(wired):
     with pytest.raises(UnsupportedEvent):
-        processor(message({"type": "move", "employee": {"employee_id": "E2"}}))
+        processor(message({"type": "promote", "employee": {"employee_id": "E2"}}))
+
+
+# --- the audit log -----------------------------------------------------------------
+
+JOIN_ADA = {"type": "join", "source": "day1.csv", "employee": {
+    "employee_id": "E2", "first_name": "Ada", "last_name": "Byron",
+    "department": "Engineering", "title": "", "manager_id": "", "start_date": "", "status": "active",
+}}
+
+
+def test_every_action_is_written_to_the_audit_log_with_its_export_and_attempt(wired):
+    processor(message(JOIN_ADA, dequeue_count=2))
+
+    assert [(r["action"], r["result"]) for r in audit_rows()] == [
+        ("create_user", "done"), ("add_to_group", "done"), ("add_to_group", "done"),
+    ]
+    assert {(r["source"], r["event_type"], r["attempt"], r["dry_run"]) for r in audit_rows()} == {
+        ("day1.csv", "join", 2, False),
+    }
+
+
+def test_a_dry_run_is_audited_as_what_would_have_happened(wired, monkeypatch):
+    monkeypatch.setenv("JML_DRY_RUN", "true")
+
+    processor(message(JOIN_ADA))
+
+    assert {(r["result"], r["dry_run"]) for r in audit_rows()} == {("would", True)}
+
+
+def test_a_failed_event_still_audits_what_did_happen_before_it_failed(wired):
+    _, directory = wired
+    directory.fail_group = "g-eng"
+
+    with pytest.raises(EventFailed):
+        processor(message(JOIN_ADA))
+
+    assert [(r["action"], r["result"]) for r in audit_rows()] == [
+        ("create_user", "done"), ("add_to_group", "done"), ("add_to_group", "failed"),
+    ]
+
+
+def test_the_final_failed_attempt_is_marked_for_the_alert_and_audited(wired, caplog):
+    _, directory = wired
+    directory.fail_group = "g-eng"
+
+    with pytest.raises(EventFailed):
+        processor(message(JOIN_ADA, dequeue_count=function_app.MAX_ATTEMPTS))
+
+    assert "poison: join E2 moved to the poison queue after 5 attempts" in caplog.text
+    assert audit_rows()[-1]["action"] == "poison_message"
+
+
+def test_an_earlier_failed_attempt_is_not_marked_as_poison(wired, caplog):
+    _, directory = wired
+    directory.fail_group = "g-eng"
+
+    with pytest.raises(EventFailed):
+        processor(message(JOIN_ADA, dequeue_count=function_app.MAX_ATTEMPTS - 1))
+
+    assert "poison:" not in caplog.text
+    assert "poison_message" not in {r["action"] for r in audit_rows()}
+
+
+def test_max_attempts_matches_the_queue_setting_in_host_json():
+    from pathlib import Path
+
+    host = json.loads((Path(function_app.__file__).parent / "host.json").read_text())
+
+    assert host["extensions"]["queues"]["maxDequeueCount"] == function_app.MAX_ATTEMPTS
+
+
+# --- the mass-change brake -----------------------------------------------------------
+
+def roster(count):
+    return HEADER + "".join(f"E{n},Ada,Byron,Engineering,Engineer,,,\n" for n in range(1, count + 1))
+
+
+def test_an_export_that_drops_half_the_company_is_halted_not_processed(wired, caplog):
+    storage, _ = wired
+    storage.blobs.update({"full.csv": roster(20), "half.csv": roster(10)})
+    parser(upload(FEED + "full.csv"))
+    sent, snapshot = len(storage.sent), dict(storage.snapshot)
+
+    parser(upload(FEED + "half.csv"))
+
+    assert len(storage.sent) == sent                 # nothing queued
+    assert storage.snapshot == snapshot              # snapshot untouched: fix and re-upload
+    assert "brake: half.csv not processed: 10 of 20 people would be offboarded" in caplog.text
+    assert [(r["action"], r["result"]) for r in audit_rows()][-1] == ("mass_change_brake", "failed")
+
+
+def test_after_the_brake_the_corrected_file_processes_normally(wired):
+    storage, _ = wired
+    storage.blobs.update({"full.csv": roster(20), "half.csv": roster(10), "fixed.csv": roster(19)})
+    parser(upload(FEED + "full.csv"))
+    parser(upload(FEED + "half.csv"))
+    sent = len(storage.sent)
+
+    parser(upload(FEED + "fixed.csv"))
+
+    assert [(e["type"], e["employee"]["employee_id"]) for e, _ in storage.sent[sent:]] == [("leave", "E20")]
+
+
+def test_the_brake_limit_comes_from_configuration(wired, monkeypatch):
+    storage, _ = wired
+    storage.blobs.update({"full.csv": roster(20), "half.csv": roster(10)})
+    parser(upload(FEED + "full.csv"))
+    sent = len(storage.sent)
+    monkeypatch.setenv("JML_MAX_LEAVE_PERCENT", "60")
+
+    parser(upload(FEED + "half.csv"))
+
+    assert len(storage.sent) == sent + 10
+
+
+def test_a_dry_run_does_not_use_the_changes_up(wired, monkeypatch):
+    storage, directory = wired
+    monkeypatch.setenv("JML_DRY_RUN", "true")
+
+    parser(upload(FEED + "day1.csv"))
+    for event, _ in list(storage.sent):
+        processor(message(event))
+
+    assert storage.saved == [] and directory.writes == []      # nothing remembered, nothing changed
+
+    # Dry run switched off, same file uploaded again: the same events, now for real.
+    monkeypatch.setenv("JML_DRY_RUN", "false")
+    before = len(storage.sent)
+    parser(upload(FEED + "day1.csv"))
+
+    assert [e["type"] for e, _ in storage.sent[before:]] == ["join", "join", "manager"]
+    assert len(storage.saved) == 1
+
+
+def test_rejected_rows_and_an_unreadable_file_are_audited(wired):
+    storage, _ = wired
+    storage.blobs["typo.csv"] = DAY_ONE.replace("E2,Ada", "E2,")
+    storage.blobs["notes.csv"] = "name,team\nAda,Engineering\n"
+
+    parser(upload(FEED + "typo.csv"))
+    parser(upload(FEED + "notes.csv"))
+
+    assert [(r["action"], r["target"]) for r in audit_rows()] == [
+        ("reject_row", "typo.csv"), ("read_export", "notes.csv"),
+    ]
 
 
 def test_the_dry_run_setting_stops_the_processor_writing(wired, monkeypatch):

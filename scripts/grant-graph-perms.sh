@@ -28,6 +28,9 @@ PERMISSIONS=(
   "User.ReadWrite.All"        # create and update users, set manager, disable sign-in
   "GroupMember.ReadWrite.All" # add and remove group members; narrower than Group.ReadWrite.All
   "User.RevokeSessions.All"   # revoke sign-in sessions when offboarding
+  # Stamp the leave date on an offboarded account, and read it back. It covers
+  # that one attribute and nothing else, which User.ReadWrite.All cannot write.
+  "User-LifeCycleInfo.ReadWrite.All"
 )
 # Deliberately not granted: Group.Read.All. Add it only if group lookups
 # return 403 without it.
