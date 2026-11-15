@@ -24,13 +24,26 @@ class FeedError(Exception):
     """The file as a whole is not a usable HR export."""
 
 
+class RowError(str):
+    """A rejected row's message, which also remembers whose row it was.
+
+    The diff needs that: a row rejected for a typo must not make its
+    employee look like they left the company.
+    """
+
+    def __new__(cls, message, employee_id=""):
+        error = super().__new__(cls, message)
+        error.employee_id = employee_id
+        return error
+
+
 def parse_hr_export(text, config=None):
     """Parse CSV text into (employees, errors).
 
     employees is a list of dicts keyed by COLUMNS, every value a stripped
     string (empty when absent; status defaults to "active"). errors is a
-    list of messages, one per rejected row, each naming the line and the
-    employee. With a config, a department the department map doesn't know
+    list of RowError messages, one per rejected row, each naming the line
+    and the employee. With a config, a department the department map doesn't know
     is an error: there would be no groups to give that person.
     """
     reader = csv.DictReader(io.StringIO(text.lstrip("﻿")))
@@ -69,7 +82,7 @@ def parse_hr_export(text, config=None):
             problems.append(f"department {employee['department']!r} is not in the department map")
 
         if problems:
-            errors.append(f"{who}: {'; '.join(problems)}")
+            errors.append(RowError(f"{who}: {'; '.join(problems)}", employee["employee_id"]))
             continue
         seen.add(employee["employee_id"])
         employees.append(employee)

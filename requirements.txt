@@ -3,3 +3,9 @@
 # unreviewed. Bump on purpose.
 requests==2.34.2
 azure-identity==1.27.0
+azure-storage-blob==12.31.1
+azure-storage-queue==12.18.1
+# The Functions library has one release line per Python generation. The app
+# runs on 3.12 in Azure; the second line is for newer interpreters locally.
+azure-functions==1.26.0; python_version < "3.13"
+azure-functions==2.4.0; python_version >= "3.13"

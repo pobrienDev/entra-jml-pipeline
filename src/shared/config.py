@@ -10,16 +10,31 @@ from pathlib import Path
 
 from shared.rules import ProvisionError
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEPARTMENT_MAP = REPO_ROOT / "config" / "department_groups.json"
+_HERE = Path(__file__).resolve()
+# In the repo the map is at <repo>/config/, two levels above this package.
+# In the deployed Function app, scripts/build_package.sh copies it to
+# <app root>/config/, one level above.
+_CANDIDATES = (
+    _HERE.parents[1] / "config" / "department_groups.json",
+    _HERE.parents[2] / "config" / "department_groups.json",
+)
 
 
-def load_department_map(path=DEPARTMENT_MAP):
+def default_department_map():
+    """Where the department map is in this environment."""
+    for path in _CANDIDATES:
+        if path.is_file():
+            return path
+    return _CANDIDATES[-1]
+
+
+def load_department_map(path=None):
     """Read and shape-check the department map.
 
     A typo here decides which groups people land in, so anything that isn't
     the expected shape stops the run instead of being skipped.
     """
+    path = path or default_department_map()
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except OSError as exc:

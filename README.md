@@ -22,12 +22,12 @@ Work in progress, built in five stages.
 | Stage | Focus | State |
 |---|---|---|
 | 1 | Foundation: infrastructure as code, managed identity, Graph permissions | done |
-| 2 | Bring over the Graph client and decision logic; joiner runs locally | in review |
-| 3 | Parser and processor functions wired up in Azure | not started |
+| 2 | Bring over the Graph client and decision logic; joiner runs locally | done |
+| 3 | Parser and processor functions wired up in Azure | in review |
 | 4 | Mover, leaver, idempotency, audit log, safety brakes | not started |
 | 5 | CI/CD with OIDC, full documentation, demo | not started |
 
-## How it will work
+## How it works
 
 ```
 HR CSV ──> Blob container ──(Event Grid)──> Parser function
@@ -43,8 +43,12 @@ HR CSV ──> Blob container ──(Event Grid)──> Parser function
    one message per change: join, move or leave.
 3. The processor handles each message by calling Microsoft Graph as a managed
    identity.
-4. Every action is written to an audit table. Messages that keep failing land
-   in a poison queue, which raises an alert.
+4. Every action is logged. Messages that keep failing land in a poison queue.
+
+Joins run end to end today. Moves and leaves are detected and queued, but the
+processor refuses them until stage 4, so they wait in the poison queue rather
+than being dropped. The audit table and the poison-queue alert also arrive in
+stage 4.
 
 ## What exists so far
 
@@ -57,20 +61,29 @@ HR CSV ──> Blob container ──(Event Grid)──> Parser function
 │   ├── monitoring.tf            Log Analytics workspace, Application Insights
 │   ├── budget.tf                monthly cost alert
 │   ├── groups.tf                the Entra ID groups named in the department map
+│   ├── eventgrid.tf             delivers "CSV uploaded" events to the parser
 │   └── backend.tf               remote state (partial config, no names committed)
-├── src/shared/
-│   ├── graph_api.py             every Microsoft Graph call, with retries and paging
-│   ├── auth.py                  where the token comes from: managed identity or Azure CLI
-│   ├── rules.py                 UPN generation, groups from the department map
-│   ├── hr_feed.py               reads and validates the HR CSV, row by row
-│   ├── onboard.py               the joiner: account, groups, manager
-│   └── config.py                loads the department map
+├── src/
+│   ├── function_app.py          the two functions: parser and processor
+│   ├── host.json                queue retry settings
+│   └── shared/
+│       ├── graph_api.py         every Microsoft Graph call, with retries and paging
+│       ├── auth.py              where the token comes from: managed identity or Azure CLI
+│       ├── rules.py             UPN generation, groups from the department map
+│       ├── hr_feed.py           reads and validates the HR CSV, row by row
+│       ├── diff.py              compares an export with the last one: join, move, leave
+│       ├── events.py            export to events, and carrying out one event
+│       ├── onboard.py           the joiner: account, groups, manager
+│       ├── storage.py           the feed, the snapshot and the queue
+│       └── config.py            loads the department map
 ├── config/
 │   └── department_groups.json   which groups each department and title gets
 ├── sample-data/
 │   └── hr_export_day1.csv       20 made-up employees across 5 departments
 ├── scripts/
 │   ├── grant-graph-perms.sh     grants the managed identity its Graph permissions
+│   ├── build_package.sh         builds the Function app zip
+│   ├── deploy.sh                builds and deploys it to the lab
 │   └── run_local.py             runs the joiner from a developer machine
 ├── tests/                       Microsoft Graph faked throughout, no network
 └── .githooks/pre-commit         blocks IDs, secrets and state from being committed
@@ -128,6 +141,29 @@ account, are in their groups and report to their manager:
 - **Dry run by default.** The local runner reads the directory and reports
   what it would do. Nothing changes without `--apply`.
 
+### From upload to accounts
+
+- **The parser diffs, it doesn't replay.** It keeps a snapshot of the last
+  export and queues one message per person who changed. Uploading the same
+  file again queues nothing.
+- **A typo is not a resignation.** A row that fails validation is reported,
+  and that person is carried forward as last known instead of looking like
+  they left.
+- **Failure is the queue's job.** If the processor can't finish an event it
+  raises, and the queue retries the message five times, 30 seconds apart,
+  then moves it to the poison queue. Nothing is lost and nothing is caught
+  and ignored. Because every step checks before it acts, a retry only does
+  what is left.
+- **Managers wait their turn.** A manager is set by a second message, held
+  back 90 seconds so both accounts exist. If the manager still isn't there,
+  that message retries and then poisons, without affecting anyone else.
+- **Two uploads at once can't corrupt the snapshot.** It is written only if
+  it hasn't changed since it was read; the loser's trigger runs again
+  against the newer one.
+- **The parser reads only its own feed.** Whatever an event points at, it
+  opens nothing but CSVs in the configured container of its own storage
+  account.
+
 ### What came from employee-provisioning-tool
 
 | | What | Notes |
@@ -173,6 +209,19 @@ terraform apply
 
 cd ..
 scripts/grant-graph-perms.sh
+scripts/deploy.sh
+```
+
+Event Grid checks that the parser function exists before it will deliver to
+it. On a brand-new environment, run the first apply with
+`-var event_subscription_enabled=false`, deploy the code, then apply again.
+
+Then drop an export in the feed and watch the accounts appear:
+
+```bash
+az storage blob upload --auth-mode login \
+  --account-name "$(terraform -chdir=infra output -raw storage_account_name)" \
+  --container-name hr-feed --file sample-data/hr_export_day1.csv --overwrite
 ```
 
 Neither copied file is tracked by git. Before committing anything, turn on the

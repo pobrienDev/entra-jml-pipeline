@@ -68,3 +68,6 @@ logs/
 *.swp
 
 # NOTE: .terraform.lock.hcl is intentionally NOT ignored — commit it.
+
+# Built deployment packages
+dist/

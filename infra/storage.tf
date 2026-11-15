@@ -26,6 +26,15 @@ resource "azurerm_storage_container" "hr_feed" {
   container_access_type = "private"
 }
 
+# The pipeline's memory: a snapshot of the last HR export it processed, which
+# the next export is compared against. Kept apart from the feed so that
+# writing it doesn't look like a new export arriving.
+resource "azurerm_storage_container" "state" {
+  name                  = "jml-state"
+  storage_account_id    = azurerm_storage_account.main.id
+  container_access_type = "private"
+}
+
 # Where Flex Consumption keeps the deployed code package.
 resource "azurerm_storage_container" "deployments" {
   name                  = "deployments"
@@ -86,4 +95,14 @@ resource "azurerm_role_assignment" "identity_storage" {
   role_definition_name = each.value
   principal_id         = azurerm_user_assigned_identity.pipeline.principal_id
   principal_type       = "ServicePrincipal"
+}
+
+# Lets a person drop an HR export into the feed. With account keys disabled,
+# being Owner of the subscription grants no access to blob data, so this role
+# is needed even by whoever created the account. Scoped to the one container:
+# it gives no access to the snapshot, the queues or the audit table.
+resource "azurerm_role_assignment" "feed_uploader" {
+  scope                = azurerm_storage_container.hr_feed.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = coalesce(var.feed_uploader_object_id, data.azurerm_client_config.current.object_id)
 }
