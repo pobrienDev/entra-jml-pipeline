@@ -7,7 +7,7 @@
               Microsoft Graph, as the managed identity.
 
 Failures are left to the platform on purpose. An exception in the processor
-makes the queue retry the message (five attempts, 30 seconds apart, see
+makes the queue retry the message (five attempts, at least 30 seconds apart, see
 host.json) and then move it to the poison queue, where it is visible and
 nothing is lost. Every step checks before it acts, so a retry repeats
 nothing.

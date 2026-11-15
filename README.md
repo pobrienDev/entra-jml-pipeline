@@ -152,7 +152,7 @@ account, are in their groups and report to their manager:
   and that person is carried forward as last known instead of looking like
   they left.
 - **Failure is the queue's job.** If the processor can't finish an event it
-  raises, and the queue retries the message five times, 30 seconds apart,
+  raises, and the queue retries the message five times, at least 30 seconds apart,
   then moves it to the poison queue. Nothing is lost and nothing is caught
   and ignored. Because every step checks before it acts, a retry only does
   what is left.
