@@ -63,7 +63,7 @@ variable "event_subscription_enabled" {
 }
 
 variable "feed_uploader_object_id" {
-  description = "Object ID of the user or identity allowed to upload HR exports to the feed container. Null means whoever runs Terraform."
+  description = "Object ID of the user or identity allowed to upload HR exports to the feed container and read the audit table. Null means whoever runs Terraform."
   type        = string
   default     = null
 }
