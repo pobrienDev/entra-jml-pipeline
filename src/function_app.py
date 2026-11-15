@@ -36,6 +36,10 @@ from shared.storage import PipelineStorage
 
 app = func.FunctionApp()
 
+# The Azure SDKs log every HTTP request and response at INFO. That is a dozen
+# lines per message, paid for by the gigabyte, burying the lines that matter.
+logging.getLogger("azure").setLevel(logging.WARNING)
+
 # Managers are set by a second message, held back so the accounts it refers
 # to have been created by then.
 MANAGER_DELAY_SECONDS = int(os.environ.get("JML_MANAGER_DELAY_SECONDS", "90"))

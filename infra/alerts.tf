@@ -56,7 +56,13 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "needs_attention" {
   # Clears itself once a window passes with nothing new to report.
   auto_mitigation_enabled = true
 
-  action {
-    action_groups = [for group in azurerm_monitor_action_group.alerts : group.id]
+  # Email someone, if an address was given. Without one the alert still
+  # fires and is listed in the Azure portal.
+  dynamic "action" {
+    for_each = azurerm_monitor_action_group.alerts
+
+    content {
+      action_groups = [action.value.id]
+    }
   }
 }
