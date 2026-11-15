@@ -1,0 +1,7 @@
+# Copy to backend.tfbackend (gitignored). Same storage account the
+# entra-terraform project bootstrapped, different state key. Never commit the
+# real account name.
+storage_account_name = "sttfstatexxxxxxxx"
+container_name       = "tfstate"
+key                  = "entra-jml-pipeline.tfstate"
+use_azuread_auth     = true
