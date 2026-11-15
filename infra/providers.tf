@@ -13,3 +13,10 @@ provider "azurerm" {
   # provider makes has to use Entra ID auth as well.
   storage_use_azuread = true
 }
+
+# Used for the one resource azurerm can't create on a storage account with
+# account keys disabled: the audit table. See storage.tf.
+provider "azapi" {
+  tenant_id       = var.tenant_id
+  subscription_id = var.subscription_id
+}
