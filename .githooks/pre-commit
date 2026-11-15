@@ -33,7 +33,8 @@ guids=$(echo "$added" | grep -oiE '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}' | 
 if [ -n "$guids" ] && [ -f .githooks/guid-allowlist ]; then
   guids=$(echo "$guids" | grep -viFf <(grep -v '^#' .githooks/guid-allowlist | awk '{print $1}' | grep .) || true)
 fi
-[ -n "$guids" ] && report "GUID(s) in staged changes — use a variable, or allowlist if public: $(echo $guids)"
+# One per line in $guids; shown on one line.
+[ -n "$guids" ] && report "GUID(s) in staged changes — use a variable, or allowlist if public: ${guids//$'\n'/ }"
 
 # 3. Secret-shaped strings
 echo "$added" | grep -qE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' && report "private key material"

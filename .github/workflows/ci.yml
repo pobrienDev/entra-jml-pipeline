@@ -1,0 +1,72 @@
+name: ci
+
+# Runs on every pull request and on main. Needs no cloud access and no
+# secrets, so it also runs for pull requests from forks.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The jobs only read the checkout; the default GITHUB_TOKEN scope is wider.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is what the Function app runs. 3.13 installs the other
+        # azure-functions release line pinned in requirements.txt.
+        python-version: ["3.12", "3.13"]
+    steps:
+      # Actions pinned to commit SHAs: a moved tag can't change what runs here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Lint
+        run: python -m pyflakes src scripts tests
+      - name: Test
+        run: python -m pytest -q
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.16.3"
+          terraform_wrapper: false
+      - name: Format
+        run: terraform fmt -check -recursive
+      # -backend=false: validate needs the providers, not the state, so this
+      # job never authenticates to Azure.
+      - name: Init
+        run: terraform -chdir=infra init -backend=false -input=false
+      - name: Validate
+        run: terraform -chdir=infra validate
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Shellcheck
+        run: shellcheck scripts/*.sh .githooks/pre-commit
+      - name: Build the deployment package
+        run: |
+          scripts/build_package.sh dist/function-app.zip
+          unzip -l dist/function-app.zip
+          # The package must carry the app, its settings file, the pinned
+          # dependencies and the department map.
+          for path in function_app.py host.json requirements.txt config/department_groups.json shared/graph_api.py; do
+            unzip -l dist/function-app.zip | grep -q " $path$" || { echo "missing from package: $path"; exit 1; }
+          done
