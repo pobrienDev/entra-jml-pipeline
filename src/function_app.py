@@ -162,9 +162,15 @@ def parser(event: func.EventGridEvent) -> None:
         storage.send({**item, "source": blob_name})
     for item in plan.manager_events:
         storage.send({**item, "source": blob_name}, delay_seconds=MANAGER_DELAY_SECONDS)
-    # Saved last: if anything above failed, Event Grid redelivers and the
-    # same diff is computed again. Messages sent twice are harmless.
-    storage.save_snapshot(plan.snapshot, blob_name, etag)
+    if _dry_run():
+        # A dry run must not use the changes up. The snapshot stays where it
+        # was, so the same export uploaded after dry run is switched off
+        # produces the same events, and this time they are carried out.
+        logging.info("parser: dry run, snapshot not advanced")
+    else:
+        # Saved last: if anything above failed, Event Grid redelivers and
+        # the same diff is computed again. Messages sent twice are harmless.
+        storage.save_snapshot(plan.snapshot, blob_name, etag)
 
     counts = {}
     for item in plan.events:

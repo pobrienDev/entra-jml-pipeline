@@ -333,6 +333,25 @@ def test_the_brake_limit_comes_from_configuration(wired, monkeypatch):
     assert len(storage.sent) == sent + 10
 
 
+def test_a_dry_run_does_not_use_the_changes_up(wired, monkeypatch):
+    storage, directory = wired
+    monkeypatch.setenv("JML_DRY_RUN", "true")
+
+    parser(upload(FEED + "day1.csv"))
+    for event, _ in list(storage.sent):
+        processor(message(event))
+
+    assert storage.saved == [] and directory.writes == []      # nothing remembered, nothing changed
+
+    # Dry run switched off, same file uploaded again: the same events, now for real.
+    monkeypatch.setenv("JML_DRY_RUN", "false")
+    before = len(storage.sent)
+    parser(upload(FEED + "day1.csv"))
+
+    assert [e["type"] for e, _ in storage.sent[before:]] == ["join", "join", "manager"]
+    assert len(storage.saved) == 1
+
+
 def test_rejected_rows_and_an_unreadable_file_are_audited(wired):
     storage, _ = wired
     storage.blobs["typo.csv"] = DAY_ONE.replace("E2,Ada", "E2,")
